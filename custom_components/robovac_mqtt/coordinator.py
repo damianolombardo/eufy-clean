@@ -46,6 +46,24 @@ from .api.map_stream import (
 from .api.p2p.mapdata import CHANGED_MAP, CHANGED_POSE, CHANGED_ROOMS, CHANGED_ZONES
 from .api.p2p.mapimage import build_map_data, build_overlay, world_to_grid
 from .api.parser import update_state
+from .api.tuya_map_decode import (
+    FRAME_MAP,
+    FRAME_PATH,
+    FRAME_POSE,
+    FRAME_ROOM_NAMES,
+    FRAME_ROOMS,
+    RoomChain,
+    apply_rooms,
+    decode_map,
+    decode_path,
+    decode_pose,
+    decode_room_names,
+    decode_rooms,
+    name_rooms,
+    parse_frame,
+    undelimit,
+)
+from .api.tuya_map_stream import TuyaMapStream
 from .const import (
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_DESKTOP,
@@ -172,6 +190,11 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._last_robot_render: float = 0.0
         self.map_image: bytes | None = None
         self._render_task: asyncio.Task | None = None
+        self.tuya_map_stream: TuyaMapStream | None = None
+        self._tuya_rooms: list[RoomChain] = []
+        self._tuya_room_names: list[tuple[int, str]] = []
+        self._tuya_path_cm: list[tuple[int, int]] = []
+        self._tuya_path_end: int = 0
         self._last_notified_error_code: int = 0
         self._last_map_save: float = 0.0
         # Live map/rooms/path over the local P2P channel (local Tuya robots only).
@@ -685,16 +708,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                             )
                             if 3 <= d <= max_step:
                                 self._robot_trail.append(robot_px)
-                    if robot_px != self._robot_pixel:
-                        self._robot_pixel = robot_px
-                        self._update_current_room()
-                        now = time.monotonic()
-                        if now - self._last_robot_render >= 2.0 and self._map_data is not None:
-                            self._last_robot_render = now
-                            self._rerender_map()
-                else:
-                    self._robot_pixel = None
-                    self._update_current_room()
+                self._move_robot(robot_px)
             return
 
         # Large channels: try as map data.
@@ -755,6 +769,56 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         span = 100 * res
         points = ((md.origin_x, md.origin_y), (md.origin_x + span, md.origin_y), (md.origin_x, md.origin_y + span))
         return [{"vacuum": {"x": x, "y": y}, "map": to_image(x, y)} for x, y in points]
+
+    @callback
+    def handle_tuya_map_frame(self, raw: bytes) -> None:
+        """Apply one ``m/m/i`` frame (Tuya-cloud models) to the map, rooms, robot and path.
+
+        Map, rooms and names only arrive while the eufy app has the map open; pose
+        and path stream for the whole clean. The path frame's seq is a byte offset
+        into the clean's path buffer, so a smaller seq means a new clean started.
+        """
+        frame = parse_frame(raw)
+        if frame is None or frame.sub != 0:
+            return
+        if frame.kind == FRAME_POSE:
+            x_cm, y_cm, _heading = decode_pose(frame.payload)
+            self._move_robot(self._pose_to_pixel(x_cm, y_cm))
+            return
+        if frame.kind == FRAME_MAP:
+            self._map_data = decode_map(undelimit(frame.payload))
+        elif frame.kind == FRAME_ROOMS:
+            self._tuya_rooms = decode_rooms(undelimit(frame.payload))
+        elif frame.kind == FRAME_ROOM_NAMES:
+            self._tuya_room_names = decode_room_names(undelimit(frame.payload))
+        elif frame.kind == FRAME_PATH:
+            if frame.seq < self._tuya_path_end:
+                self._tuya_path_cm.clear()
+            self._tuya_path_end = frame.seq + len(frame.payload)
+            self._tuya_path_cm.extend(decode_path(frame.payload))
+        else:
+            return
+        self._apply_tuya_overlay()
+
+    def _apply_tuya_overlay(self) -> None:
+        if self._map_data is None:
+            return
+        apply_rooms(self._map_data, self._tuya_rooms, name_rooms(self._tuya_rooms, self._tuya_room_names))
+        self._robot_trail = [px for x, y in self._tuya_path_cm if (px := self._pose_to_pixel(x, y))]
+        self._rerender_map()
+
+    def _move_robot(self, robot_px: tuple[int, int] | None) -> None:
+        """Move the robot marker, re-rendering at most every 2 s."""
+        if robot_px == self._robot_pixel:
+            return
+        self._robot_pixel = robot_px
+        self._update_current_room()
+        if robot_px is None:
+            return
+        now = time.monotonic()
+        if now - self._last_robot_render >= 2.0 and self._map_data is not None:
+            self._last_robot_render = now
+            self._rerender_map()
 
     def _pose_to_pixel(self, x_cm: int, y_cm: int) -> tuple[int, int] | None:
         """Convert robot pose (cm) to map pixel coordinates."""
@@ -1108,6 +1172,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 if dps:
                     new_state, _ = self._parse_dps(dps)
                     self._on_cloud_success()
+                    if new_state.activity == "cleaning" and self.data.activity != "cleaning" and self.tuya_map_stream:
+                        self.tuya_map_stream.resubscribe(self.device_id)
                     return new_state
             except Exception as e:
                 _LOGGER.warning(

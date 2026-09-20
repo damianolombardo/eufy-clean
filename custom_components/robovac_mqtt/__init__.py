@@ -20,6 +20,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.setup import async_when_setup
 
 from .api.cloud import EufyLogin, EufyLoginError
+from .api.tuya_map_stream import TuyaMapStream
 from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
@@ -276,8 +277,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 eufy_id,
             )
 
+    map_stream = await _async_start_tuya_map_stream(eufy_login, coordinators)
+
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {"coordinators": coordinators}
+    hass.data[DOMAIN][entry.entry_id] = {"coordinators": coordinators, "map_stream": map_stream}
 
     # Clean up migrated data from config entry (skip for multi-device to avoid
     # deleting data that was intentionally not migrated)
@@ -294,6 +297,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def _async_start_tuya_map_stream(
+    eufy_login: EufyLogin, coordinators: list[EufyCleanCoordinator]
+) -> TuyaMapStream | None:
+    """Subscribe Tuya-transport devices to the app's m/m/i live-map stream.
+
+    The stream is best-effort: without it these devices still work, just with
+    no live map, so a failed connect only logs.
+    """
+    tuya = eufy_login.tuya_client
+    tuya_coordinators = [c for c in coordinators if c.connection_type in ("cloud", "local")]
+    if not tuya or not tuya_coordinators:
+        return None
+    if not (tuya.mqtt_host and tuya.uid and tuya.sid and tuya.ecode):
+        return None
+    stream = TuyaMapStream(tuya.mqtt_host, tuya.mqtt_port, tuya.uid, tuya.sid, tuya.ecode)
+    for coordinator in tuya_coordinators:
+        stream.subscribe(coordinator.device_id, coordinator.handle_tuya_map_frame)
+        coordinator.tuya_map_stream = stream
+    try:
+        await stream.connect()
+    except OSError as e:
+        _LOGGER.warning("Tuya live-map stream unavailable: %s", e)
+        return None
+    return stream
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
@@ -306,6 +335,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await coordinator.async_stop_p2p()
                 if coordinator.client:
                     await coordinator.client.disconnect()
+
+        if data and data.get("map_stream"):
+            await data["map_stream"].disconnect()
 
         hass.data[DOMAIN].pop(entry.entry_id)
 

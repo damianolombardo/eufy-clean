@@ -87,6 +87,11 @@ class TuyaCloudClient:
         self.region = region
         self.endpoint = TUYA_REGIONS.get(region, TUYA_REGIONS["EU"])
         self.sid: str | None = None
+        # Mobile-MQTT login (uid/ecode/broker) for the m/m/i map stream; set by login().
+        self.uid: str | None = None
+        self.ecode: str | None = None
+        self.mqtt_host: str | None = None
+        self.mqtt_port: int = 8883
         # Match upstream JS: randomize('a0', 44) — 44-char lowercase alphanumeric
         self._device_id = "".join(
             random.choices(string.ascii_lowercase + string.digits, k=44)
@@ -149,6 +154,10 @@ class TuyaCloudClient:
             _LOGGER.debug("Tuya redirected to region %s: %s", self.region, self.endpoint)
 
         self.sid = login_result["sid"]
+        self.uid = login_result.get("uid")
+        self.ecode = login_result.get("ecode")
+        self.mqtt_host = domain.get("mobileMqttsUrl")
+        self.mqtt_port = domain.get("mqttsPort", 8883)
         _LOGGER.debug("Tuya login successful, sid obtained for region %s", self.region)
         return login_result["sid"]
 

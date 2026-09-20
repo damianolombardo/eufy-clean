@@ -5,12 +5,17 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
+import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.robovac_mqtt import _FRONTEND_DIR, _int_keyed
+from custom_components.robovac_mqtt import (
+    _FRONTEND_DIR,
+    _async_start_tuya_map_stream,
+    _int_keyed,
+)
 from custom_components.robovac_mqtt.api.cloud import EufyLoginError
 from custom_components.robovac_mqtt.const import (
     CONF_LOCAL_DEVICES,
@@ -343,3 +348,51 @@ def test_int_keyed_restores_int_keys_and_drops_bad_entries(caplog):
     assert _int_keyed(raw, int, "dev1", "map id") == {2154: 1, 3001: 2}
     assert "ignoring non-integer map id 'kitchen'" in caplog.text
     assert "ignoring non-integer map id '4'" in caplog.text
+
+
+def _tuya_login(**overrides):
+    tuya = MagicMock(mqtt_host="m1.example", mqtt_port=8883, uid="u", sid="s", ecode="e")
+    for name, value in overrides.items():
+        setattr(tuya, name, value)
+    return MagicMock(tuya_client=tuya)
+
+
+def _coordinator(connection_type: str, device_id: str = "dev1"):
+    return MagicMock(connection_type=connection_type, device_id=device_id, tuya_map_stream=None)
+
+
+@pytest.mark.parametrize(
+    ("login", "connection_types"),
+    [
+        (_tuya_login(), ["mqtt"]),
+        (MagicMock(tuya_client=None), ["cloud"]),
+        (_tuya_login(mqtt_host=None), ["cloud"]),
+        (_tuya_login(ecode=None), ["cloud"]),
+    ],
+)
+async def test_tuya_map_stream_not_started_without_tuya_devices_or_login(login, connection_types):
+    """MQTT-transport devices and incomplete Tuya logins never open the m/m/i session."""
+    coordinators = [_coordinator(t) for t in connection_types]
+    with patch("custom_components.robovac_mqtt.TuyaMapStream") as stream_cls:
+        assert await _async_start_tuya_map_stream(login, coordinators) is None
+    stream_cls.assert_not_called()
+    assert all(c.tuya_map_stream is None for c in coordinators)
+
+
+async def test_tuya_map_stream_subscribes_only_tuya_devices():
+    """One account-wide session, subscribed for cloud/local devices but not MQTT ones."""
+    mqtt_dev, cloud_dev, local_dev = _coordinator("mqtt", "m"), _coordinator("cloud", "c"), _coordinator("local", "l")
+    with patch("custom_components.robovac_mqtt.TuyaMapStream") as stream_cls:
+        stream_cls.return_value.connect = AsyncMock()
+        stream = await _async_start_tuya_map_stream(_tuya_login(), [mqtt_dev, cloud_dev, local_dev])
+    assert stream is stream_cls.return_value
+    subscribed = [call.args[0] for call in stream.subscribe.call_args_list]
+    assert subscribed == ["c", "l"]
+    assert mqtt_dev.tuya_map_stream is None
+
+
+async def test_tuya_map_stream_connect_failure_is_not_fatal():
+    """A refused broker connection leaves the devices working without a live map."""
+    with patch("custom_components.robovac_mqtt.TuyaMapStream") as stream_cls:
+        stream_cls.return_value.connect = AsyncMock(side_effect=OSError("refused"))
+        assert await _async_start_tuya_map_stream(_tuya_login(), [_coordinator("cloud")]) is None

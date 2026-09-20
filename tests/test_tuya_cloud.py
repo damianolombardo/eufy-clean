@@ -600,3 +600,27 @@ def test_encrypt_password_matches_upstream_js(case):
         f"encrypt_password mismatch for {case['name']}: "
         f"Python={result}, JS={case['expected_hex']}"
     )
+
+
+@pytest.mark.asyncio
+async def test_login_keeps_mobile_mqtt_credentials():
+    """Login should retain uid/ecode and the mobile MQTT broker for the map stream."""
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    responses = {
+        "tuya.m.user.uid.token.create": {
+            "publicKey": "00b3510a2e6c4fa1e339a0703e64444c0c4a0663385dbd0d2c2c0a8e2b4f1c63",
+            "exponent": "65537",
+            "token": "t",
+        },
+        "tuya.m.user.uid.password.login": {
+            "sid": "s",
+            "uid": "eu123",
+            "ecode": "e",
+            "domain": {"mobileMqttsUrl": "m1.example.com", "mqttsPort": 8883},
+        },
+    }
+
+    with patch.object(client, "request", side_effect=lambda action, *a, **kw: responses[action]):
+        await client.login("user_id_123")
+
+    assert (client.uid, client.ecode, client.mqtt_host, client.mqtt_port) == ("eu123", "e", "m1.example.com", 8883)

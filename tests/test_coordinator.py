@@ -1,6 +1,9 @@
 """Unit tests for the EufyCleanCoordinator."""
 
+# pylint: disable=redefined-outer-name
+
 import io
+import struct
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,8 +19,15 @@ from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
 from custom_components.robovac_mqtt.utils import decode
-
-# pylint: disable=redefined-outer-name
+from tests.test_tuya_map_decode import (
+    SQUARE,
+    _delimited,
+    _frame,
+    _len_field,
+    _map_message,
+    _names_message,
+    _rooms_message,
+)
 
 
 @pytest.fixture
@@ -912,3 +922,64 @@ def test_s1_pro_room_command_uses_its_model_context(mock_hass, mock_login, conne
     command = coordinator.build_device_command("room_clean", room_ids=[6, 2], map_id=7)
     rooms = decode(ModeCtrlRequest, command["152"]).select_rooms_clean.rooms
     assert [(room.id, room.order) for room in rooms] == [(6, 0), (2, 1)]
+
+
+# ---------------------------------------------------------------------------
+# Tuya m/m/i live-map frames
+# ---------------------------------------------------------------------------
+
+
+def _tuya_frames():
+    path = struct.pack(">HHB", 0x8000 | 100, 0x8000 | 100, 0) + struct.pack(">HHB", 0x8000 | 90, 0x8000 | 100, 0)
+    return {
+        "map": _frame(2, _delimited(_map_message(60, 60, bytes([127]) * 3600))),
+        "rooms": _frame(4, _delimited(_rooms_message([(10, SQUARE)]))),
+        "names": _frame(5, _delimited(_names_message([(1, "Study")]))),
+        "path": lambda seq: _frame(3, path, seq=seq),
+        "pose": _frame(7, _delimited(_len_field(1, b""))),
+    }
+
+
+def test_tuya_frames_build_named_map_and_trail(mock_hass, mock_login):
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    frames = _tuya_frames()
+    with patch.object(coordinator, "_rerender_map") as rerender:
+        coordinator.handle_tuya_map_frame(frames["path"](0))
+        rerender.assert_not_called()
+        for kind in ("map", "rooms", "names"):
+            coordinator.handle_tuya_map_frame(frames[kind])
+    assert coordinator._map_data.room_names == {10: "Study"}
+    assert coordinator._robot_trail == [(10, 20), (12, 20)]
+
+
+def test_tuya_path_resets_when_seq_restarts(mock_hass, mock_login):
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    frames = _tuya_frames()
+    with patch.object(coordinator, "_rerender_map"):
+        coordinator.handle_tuya_map_frame(frames["map"])
+        coordinator.handle_tuya_map_frame(frames["path"](0))
+        coordinator.handle_tuya_map_frame(frames["path"](10))
+        assert len(coordinator._robot_trail) == 4
+        coordinator.handle_tuya_map_frame(frames["path"](0))
+    assert len(coordinator._robot_trail) == 2
+
+
+def test_tuya_pose_moves_robot_marker(mock_hass, mock_login):
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    frames = _tuya_frames()
+    with patch.object(coordinator, "_rerender_map"):
+        coordinator.handle_tuya_map_frame(frames["map"])
+        coordinator.handle_tuya_map_frame(frames["pose"])
+    assert coordinator._robot_pixel == (30, 40)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("before", "renews"), [("docked", True), ("cleaning", False)])
+async def test_cloud_poll_renews_map_stream_when_clean_starts(mock_hass, mock_login, before, renews):
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    coordinator.tuya_map_stream = MagicMock()
+    coordinator.data = VacuumState(activity=before)
+    mock_login.getCloudDevice = AsyncMock(return_value={"1": True})
+    with patch.object(coordinator, "_parse_dps", return_value=(VacuumState(activity="cleaning"), {})):
+        await coordinator._async_update_data()
+    assert coordinator.tuya_map_stream.resubscribe.called is renews
