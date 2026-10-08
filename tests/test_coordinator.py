@@ -33,7 +33,9 @@ from tests.test_tuya_map_decode import (
 @pytest.fixture
 def mock_hass():
     """Mock the Home Assistant object."""
-    return MagicMock()
+    hass = MagicMock()
+    hass.async_create_task.side_effect = lambda coro, *args, **kwargs: coro.close()
+    return hass
 
 
 @pytest.fixture
@@ -971,6 +973,43 @@ def test_tuya_pose_moves_robot_marker(mock_hass, mock_login):
         coordinator.handle_tuya_map_frame(frames["map"])
         coordinator.handle_tuya_map_frame(frames["pose"])
     assert coordinator._robot_pixel == (30, 40)
+
+
+@pytest.mark.asyncio
+async def test_history_map_loads_rooms_and_names(mock_hass, mock_login):
+    blob = (
+        _len_field(3, _names_message([(1, "Study")]))
+        + _len_field(10, _map_message(60, 60, bytes([127]) * 3600))
+        + _len_field(11, _rooms_message([(10, SQUARE)]))
+    )
+    mock_login.tuya_client.get_latest_history_map = AsyncMock(return_value=blob)
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    with patch.object(coordinator, "_rerender_map") as rerender:
+        await coordinator.async_refresh_history_map()
+    assert coordinator._map_data.room_names == {10: "Study"}
+    rerender.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_history_map_ignores_undecodable_file(mock_hass, mock_login):
+    mock_login.tuya_client.get_latest_history_map = AsyncMock(return_value=b"\x08\x01")
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    await coordinator.async_refresh_history_map()
+    assert coordinator._map_data is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("before", "refreshes"), [("cleaning", True), ("docked", False)])
+async def test_cloud_poll_refreshes_history_when_clean_ends(mock_hass, mock_login, before, refreshes):
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    coordinator.data = VacuumState(activity=before)
+    mock_login.getCloudDevice = AsyncMock(return_value={"1": True})
+    with (
+        patch.object(coordinator, "_parse_dps", return_value=(VacuumState(activity="docked"), {})),
+        patch.object(coordinator, "async_refresh_history_map", MagicMock()) as refresh,
+    ):
+        await coordinator._async_update_data()
+    assert refresh.called is refreshes
 
 
 @pytest.mark.asyncio

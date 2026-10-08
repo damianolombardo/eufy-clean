@@ -5,11 +5,14 @@ import base64
 import json
 import logging
 import math
+import struct
 import time
+import zlib
 from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
+import aiohttp
 from homeassistant.components.persistent_notification import (
     async_create as pn_async_create,
 )
@@ -46,6 +49,7 @@ from .api.map_stream import (
 from .api.p2p.mapdata import CHANGED_MAP, CHANGED_POSE, CHANGED_ROOMS, CHANGED_ZONES
 from .api.p2p.mapimage import build_map_data, build_overlay, world_to_grid
 from .api.parser import update_state
+from .api.tuya_cloud import TuyaCloudError
 from .api.tuya_map_decode import (
     FRAME_MAP,
     FRAME_PATH,
@@ -54,6 +58,7 @@ from .api.tuya_map_decode import (
     FRAME_ROOMS,
     RoomChain,
     apply_rooms,
+    decode_history,
     decode_map,
     decode_path,
     decode_pose,
@@ -522,6 +527,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             _CLOUD_POLL_INTERVAL,
         )
         await self.async_load_storage()
+        self.hass.async_create_task(self.async_refresh_history_map())
 
     @callback
     def _handle_mqtt_message(self, payload: bytes) -> None:
@@ -798,6 +804,28 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             self._tuya_path_cm.extend(decode_path(frame.payload))
         else:
             return
+        self._apply_tuya_overlay()
+
+    async def async_refresh_history_map(self) -> None:
+        """Load map, rooms and names from the newest per-clean history file (Tuya-cloud models).
+
+        This is the only app-free source of the map: live map frames need the eufy
+        app open. Best-effort, as models without history files simply have none.
+        """
+        tuya = self.eufy_login.tuya_client
+        if tuya is None:
+            return
+        try:
+            blob = await tuya.get_latest_history_map(self.device_id)
+            if blob is None:
+                return
+            self._map_data, self._tuya_rooms, self._tuya_room_names = decode_history(blob)
+        except (
+            TuyaCloudError, aiohttp.ClientError, KeyError, IndexError, ValueError, struct.error, zlib.error
+        ) as e:
+            _LOGGER.debug("No history map for %s: %s", self.device_name, e)
+            return
+        _LOGGER.debug("Loaded history map for %s (%d rooms)", self.device_name, len(self._tuya_rooms))
         self._apply_tuya_overlay()
 
     def _apply_tuya_overlay(self) -> None:
@@ -1172,6 +1200,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 if dps:
                     new_state, _ = self._parse_dps(dps)
                     self._on_cloud_success()
+                    # A finished clean leaves a new history file holding its map.
+                    if new_state.activity == "docked" and self.data.activity in ("cleaning", "returning"):
+                        self.hass.async_create_task(self.async_refresh_history_map())
                     if new_state.activity == "cleaning" and self.data.activity != "cleaning" and self.tuya_map_stream:
                         self.tuya_map_stream.resubscribe(self.device_id)
                     return new_state

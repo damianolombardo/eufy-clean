@@ -2,7 +2,9 @@
 
 import json
 import logging
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from yarl import URL
@@ -14,6 +16,7 @@ from custom_components.robovac_mqtt.api.tuya_cloud import (
     _hmac_sign,
     _md5,
     _mobile_hash,
+    presign_storage_url,
 )
 
 # ── Helper utilities ────────────────────────────────────────────────
@@ -624,3 +627,50 @@ async def test_login_keeps_mobile_mqtt_credentials():
         await client.login("user_id_123")
 
     assert (client.uid, client.ecode, client.mqtt_host, client.mqtt_port) == ("eu123", "e", "m1.example.com", 8883)
+
+
+# ── History map download ────────────────────────────────────────────
+
+STORAGE = {"bucket": "b", "endpoint": "tuyaeu.com", "region": "tuyaeu.com", "ak": "AK", "sk": "SK", "token": "TOK"}
+
+
+def test_presign_storage_url_signs_token_into_query():
+    url = presign_storage_url(STORAGE, "/c1/common/history/x.bin", datetime(2026, 10, 16, tzinfo=timezone.utc))
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    assert (parsed.netloc, parsed.path) == ("b.tuyaeu.com", "/c1/common/history/x.bin")
+    assert query["X-Amz-Credential"] == ["AK/20261016/tuyaeu.com/s3/aws4_request"]
+    assert query["X-Amz-Security-Token"] == ["TOK"]
+    assert len(query["X-Amz-Signature"][0]) == 64
+    assert url.index("X-Amz-Security-Token") < url.index("X-Amz-Signature")
+
+
+@pytest.mark.asyncio
+async def test_get_latest_history_map_downloads_newest_file():
+    download = MagicMock()
+    download.read = AsyncMock(return_value=b"blob")
+    download.__aenter__ = AsyncMock(return_value=download)
+    download.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.get = MagicMock(return_value=download)
+    client = TuyaCloudClient("EU", websession=session)
+    files = {"datas": [{"time": 2, "file": "https://b.tuyaeu.com/c1/new.bin"}, {"time": 1, "file": "/c1/old.bin"}]}
+    responses = {
+        "tuya.m.location.list": [{"groupId": 7}],
+        "tuya.m.dev.common.file.list": files,
+        "tuya.m.dev.storage.config.get": STORAGE,
+    }
+
+    with patch.object(client, "request", side_effect=lambda action, *a, **kw: responses[action]):
+        assert await client.get_latest_history_map("dev") == b"blob"
+
+    assert urlparse(session.get.call_args.args[0]).path == "/c1/new.bin"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_history_map_none_without_files():
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    responses = {"tuya.m.location.list": [{"groupId": 7}], "tuya.m.dev.common.file.list": {"datas": []}}
+
+    with patch.object(client, "request", side_effect=lambda action, *a, **kw: responses[action]):
+        assert await client.get_latest_history_map("dev") is None

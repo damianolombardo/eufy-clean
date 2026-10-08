@@ -18,7 +18,9 @@ from custom_components.robovac_mqtt.coordinator import (
 
 @pytest.fixture
 def mock_hass():
-    return MagicMock()
+    hass = MagicMock()
+    hass.async_create_task.side_effect = lambda coro, *args, **kwargs: coro.close()
+    return hass
 
 
 @pytest.fixture

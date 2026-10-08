@@ -17,7 +17,9 @@ import random
 import string
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote, urlparse
 
 import aiohttp
 from cryptography.hazmat.backends import default_backend
@@ -297,6 +299,35 @@ class TuyaCloudClient:
             data={"dps": dps, "devId": device_id, "gwId": device_id},
         )
 
+    async def get_latest_history_map(self, device_id: str) -> bytes | None:
+        """Download the newest per-clean history map file from Tuya storage.
+
+        Tuya-cloud models (L60 SES) upload one protobuf ``.bin`` per clean holding
+        the map, room outlines and room names (see ``tuya_map_decode.decode_history``).
+        Returns ``None`` when the device has no history files.
+        """
+        groups = await self.request("tuya.m.location.list")
+        gid = str(groups[0]["groupId"]) if groups else None
+        # History maps are listed under fileType "pic" although they are protobuf .bin files.
+        listing = await self.request(
+            "tuya.m.dev.common.file.list",
+            {"devId": device_id, "fileType": "pic", "limit": 100, "offset": 0},
+            version="2.0",
+            gid=gid,
+        )
+        files = (listing or {}).get("datas") or []
+        if not files:
+            return None
+        newest = max(files, key=lambda f: f["time"])["file"]
+        # Entries hold either a full URL or a bare storage key; signing needs the key.
+        key = urlparse(newest).path if "://" in newest else newest
+        storage = await self.request("tuya.m.dev.storage.config.get", {"devId": device_id, "type": "Common"})
+        async with self._websession.get(
+            presign_storage_url(storage, key, datetime.now(timezone.utc)), timeout=_REQUEST_TIMEOUT
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.read()
+
     def _sign(self, params: dict[str, Any]) -> str:
         """Build HMAC-SHA256 signature for request parameters."""
         sorted_keys = sorted(params.keys())
@@ -316,6 +347,36 @@ class TuyaCloudClient:
 
         sign_str = "||".join(parts)
         return _hmac_sign(self._hmac_key, sign_str)
+
+
+def presign_storage_url(storage: dict[str, Any], key: str, now: datetime) -> str:
+    """SigV4 query-presigned GET URL for a Tuya storage object.
+
+    Tuya's region string (e.g. ``tuyaeu.com``) is not an AWS region, which boto3
+    rejects, and the bucket only accepts the session token as a *signed*
+    ``X-Amz-Security-Token`` query parameter, hence the hand-rolled signer.
+    """
+    host = f"{storage['bucket']}.{storage['endpoint']}"
+    region = storage["region"]
+    amz_date, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
+    scope = f"{day}/{region}/s3/aws4_request"
+    query = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{storage['ak']}/{scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-Expires": "600",
+        "X-Amz-SignedHeaders": "host",
+        "X-Amz-Security-Token": storage["token"],
+    }
+    query_string = "&".join(f"{quote(k, safe='-_.~')}={quote(v, safe='-_.~')}" for k, v in sorted(query.items()))
+    path = "/" + quote(key.lstrip("/"), safe="/-_.~")
+    canonical = f"GET\n{path}\n{query_string}\nhost:{host}\n\nhost\nUNSIGNED-PAYLOAD"
+    to_sign = f"AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{hashlib.sha256(canonical.encode()).hexdigest()}"
+    signing_key = ("AWS4" + storage["sk"]).encode()
+    for part in (day, region, "s3", "aws4_request"):
+        signing_key = hmac.new(signing_key, part.encode(), hashlib.sha256).digest()
+    signature = hmac.new(signing_key, to_sign.encode(), hashlib.sha256).hexdigest()
+    return f"https://{host}{path}?{query_string}&X-Amz-Signature={signature}"
 
 
 def _encrypt_password(uid: str, public_key_n: str, exponent: int) -> str:
