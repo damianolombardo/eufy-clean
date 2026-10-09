@@ -478,6 +478,8 @@ async def async_setup_entry(
         # them where no map arrives to avoid a permanent `unavailable`.
         if coordinator.receives_map:
             novel_sensors.append(CurrentRoomSensorEntity(coordinator))
+        # The Tuya map stream carries no map id.
+        if coordinator.receives_map and coordinator.tuya_map_stream is None:
             novel_sensors.append(
                 RoboVacSensor(
                     coordinator,

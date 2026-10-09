@@ -223,6 +223,7 @@ async def test_novel_coordinator_creates_all_sensors():
     coordinator.device_model = "T2261"
     coordinator.api_type = "novel"
     coordinator.connection_type = "mqtt"
+    coordinator.tuya_map_stream = None
     coordinator.data = VacuumState()
     coordinator.last_update_success = True
 
@@ -272,17 +273,21 @@ async def test_novel_coordinator_creates_all_sensors():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("receives_map", "expected"), [(False, 26), (True, 28)])
-async def test_map_channel_sensors_follow_receives_map(receives_map, expected):
+@pytest.mark.parametrize(
+    ("receives_map", "tuya_stream", "expected"),
+    [(False, False, 26), (True, False, 28), (True, True, 27)],
+)
+async def test_map_channel_sensors_follow_receives_map(receives_map, tuya_stream, expected):
     """active_map and current_room come with the map, so they only exist where
     one can arrive (coordinator.receives_map); elsewhere nothing would ever
-    fill them."""
+    fill them. The Tuya map stream has no map id, so it gets current_room only."""
     coordinator = MagicMock()
     coordinator.device_id = "novel_dev"
     coordinator.device_name = "Novel Vac"
     coordinator.device_model = "T2080A"
     coordinator.api_type = "novel"
     coordinator.receives_map = receives_map
+    coordinator.tuya_map_stream = MagicMock() if tuya_stream else None
     coordinator.data = VacuumState()
     coordinator.last_update_success = True
 
@@ -297,8 +302,8 @@ async def test_map_channel_sensors_follow_receives_map(receives_map, expected):
 
     assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
     assert len(added_entities) == expected
-    for suffix in ("active_map", "current_room"):
-        assert (f"novel_dev_{suffix}" in entity_ids) == receives_map
+    assert ("novel_dev_current_room" in entity_ids) == receives_map
+    assert ("novel_dev_active_map" in entity_ids) == (receives_map and not tuya_stream)
     # Other novel sensors are there either way
     for suffix in [
         "cleaning_time",

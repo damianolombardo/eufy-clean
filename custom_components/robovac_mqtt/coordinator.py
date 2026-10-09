@@ -297,12 +297,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     @property
     def receives_map(self) -> bool:
-        """True when a map can arrive: over Eufy MQTT or the local P2P feed.
+        """True when a map can arrive: over Eufy MQTT, the local P2P feed or the Tuya map stream.
 
         Tuya Cloud polling never carries one, and on local Tuya the feed only
         runs when _start_p2p_feed could start it (Tuya 3.3 and a cloud session).
+        The Tuya map stream is attached at setup when the Tuya mobile login
+        can open an MQTT session.
         """
-        return self.connection_type == "mqtt" or self.p2p is not None
+        return self.connection_type == "mqtt" or self.p2p is not None or self.tuya_map_stream is not None
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -829,6 +831,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._apply_tuya_overlay()
 
     def _apply_tuya_overlay(self) -> None:
+        rooms = [{"id": room_id, "name": name} for room_id, name in sorted(self._tuya_room_names)]
+        if rooms and rooms != self.data.rooms:
+            self.async_set_updated_data(replace(self.data, rooms=rooms))
+            self._async_commit_segment_changes(None)
         if self._map_data is None:
             return
         apply_rooms(self._map_data, self._tuya_rooms, name_rooms(self._tuya_rooms, self._tuya_room_names))

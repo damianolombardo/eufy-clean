@@ -523,6 +523,14 @@ def test_receives_map(mock_hass, mock_login, connection_type, has_p2p, expected)
     assert coordinator.receives_map is expected
 
 
+def test_receives_map_with_tuya_map_stream(mock_hass, mock_login):
+    """A Tuya-cloud robot receives a map once the Tuya map stream is attached."""
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    assert coordinator.receives_map is False
+    coordinator.tuya_map_stream = MagicMock()
+    assert coordinator.receives_map is True
+
+
 def test_build_device_command_legacy(mock_hass, mock_login):
     """build_device_command should use legacy builder for legacy api_type."""
     device_info = {
@@ -987,6 +995,7 @@ async def test_history_map_loads_rooms_and_names(mock_hass, mock_login):
     with patch.object(coordinator, "_rerender_map") as rerender:
         await coordinator.async_refresh_history_map()
     assert coordinator._map_data.room_names == {10: "Study"}
+    assert coordinator.data.rooms == [{"id": 1, "name": "Study"}]
     rerender.assert_called_once()
 
 
