@@ -241,11 +241,29 @@ unavailable just because the LAN address has shifted.
 > to send a map over it. The channel is documented in `docs/P2P_MAP_CHANNEL.md`.
 > The P2P password comes from your Tuya Cloud session, so each new P2P connection
 > needs a fresh cloud-issued session. The feed needs Tuya protocol 3.3 and a Tuya
-> Cloud session. Without them, and over Tuya Cloud polling, no map arrives: the
-> map camera isn't created, and `zone_clean` fails with an error unless a map
-> from an earlier session with the feed is still stored. Everything else
+> Cloud session. Without them, and over Tuya Cloud polling on robots that don't
+> use the Tuya map stream below, no map arrives: the map camera isn't created,
+> and `zone_clean` fails with an error unless a map from an earlier session
+> with the feed is still stored. Everything else
 > (vacuum/mop mode, water level, spot and room commands, station, consumables,
 > lifetime stats) works over both transports.
+
+> [!NOTE]
+> **Map over Tuya Cloud** (verified on the L60 Hybrid SES, T2278). When the
+> Tuya mobile login can open an MQTT session, cloud-transport robots get the
+> map camera from two Tuya sources, both reached with the same Eufy login:
+>
+> - **Floor plan, room outlines and room names** come from the newest
+>   per-clean history file the vacuum uploads to Tuya cloud storage. It is
+>   loaded at startup and refreshed after each clean. The vacuum uploads these
+>   files irregularly, so the plan can lag the app until the next upload.
+> - **Live robot position and cleaning trail** stream from the Tuya mobile
+>   MQTT session (`m/m/i/<devId>`) while the robot cleans. A restart
+>   mid-clean shows only the trail from that point on.
+>
+> The room ids in the vacuum's `rooms` attribute are the ones `room_clean`
+> takes; `map_id` is not checked on these models. Re-mapping in the Eufy app
+> renumbers rooms, and the new ids appear after the next history upload.
 
 ### Optional: Manual room name overrides
 
