@@ -99,5 +99,6 @@ class TuyaMapStream:
 
     def _on_message(self, client: mqtt.Client, userdata: object, msg: mqtt.MQTTMessage) -> None:
         callback = self._callbacks.get(msg.topic.removeprefix(_TOPIC_PREFIX))
-        if callback and self._loop:
+        # paho's thread can outlive the event loop at shutdown; drop frames then.
+        if callback and self._loop and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(callback, msg.payload)

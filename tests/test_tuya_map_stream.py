@@ -30,11 +30,21 @@ def test_connect_subscribes_every_registered_device():
 def test_message_routes_to_device_callback_on_loop():
     stream = _stream()
     stream._loop = MagicMock()
+    stream._loop.is_closed.return_value = False
     callback = MagicMock()
     stream.subscribe("dev_a", callback)
     stream._on_message(None, None, SimpleNamespace(topic="m/m/i/dev_a", payload=b"\x55\xaa"))
     stream._on_message(None, None, SimpleNamespace(topic="m/m/i/other", payload=b"x"))
     stream._loop.call_soon_threadsafe.assert_called_once_with(callback, b"\x55\xaa")
+
+
+def test_message_after_loop_closed_is_dropped():
+    stream = _stream()
+    stream._loop = MagicMock()
+    stream._loop.is_closed.return_value = True
+    stream.subscribe("dev_a", MagicMock())
+    stream._on_message(None, None, SimpleNamespace(topic="m/m/i/dev_a", payload=b"\x55\xaa"))
+    stream._loop.call_soon_threadsafe.assert_not_called()
 
 
 def test_resubscribe_renews_device_subscription():

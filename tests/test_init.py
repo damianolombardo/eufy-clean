@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -396,3 +396,41 @@ async def test_tuya_map_stream_connect_failure_is_not_fatal():
     with patch("custom_components.robovac_mqtt.TuyaMapStream") as stream_cls:
         stream_cls.return_value.connect = AsyncMock(side_effect=OSError("refused"))
         assert await _async_start_tuya_map_stream(_tuya_login(), [_coordinator("cloud")]) is None
+
+
+async def test_tuya_map_stream_disconnects_on_homeassistant_stop(hass: HomeAssistant):
+    """HA skips entry unload at shutdown, so the stream must close on the stop event."""
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "test_user", CONF_PASSWORD: "test_password"},
+        entry_id="test_stop_entry",
+    )
+    config_entry.add_to_hass(hass)
+    stream = MagicMock(disconnect=AsyncMock())
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator"
+    ) as mock_coord_cls, patch(
+        "custom_components.robovac_mqtt._async_start_tuya_map_stream", AsyncMock(return_value=stream)
+    ):
+        mock_login = mock_login_cls.return_value
+        mock_login.init = AsyncMock()
+        mock_login.mqtt_devices = []
+        mock_login.cloud_devices = [
+            {"deviceId": "cloud_dev_1", "deviceModel": "T2276", "deviceName": "L60", "dps": {}}
+        ]
+        mock_coord = mock_coord_cls.return_value
+        mock_coord.initialize = AsyncMock()
+        mock_coord.device_id = "cloud_dev_1"
+        mock_coord.device_name = "L60"
+        mock_coord.device_model = "T2276"
+        mock_coord.data = MagicMock()
+
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+        stream.disconnect.assert_not_awaited()
+
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+        await hass.async_block_till_done()
+
+    stream.disconnect.assert_awaited_once()
