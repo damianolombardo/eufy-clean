@@ -325,7 +325,10 @@ class TuyaCloudClient:
         async with self._websession.get(
             presign_storage_url(storage, key, datetime.now(timezone.utc)), timeout=_REQUEST_TIMEOUT
         ) as resp:
-            resp.raise_for_status()
+            # Not raise_for_status(): its error text carries the presigned URL, whose query
+            # holds the temporary storage credentials, and callers log the error.
+            if not resp.ok:
+                raise TuyaCloudError(str(resp.status), "history map download failed")
             return await resp.read()
 
     def _sign(self, params: dict[str, Any]) -> str:

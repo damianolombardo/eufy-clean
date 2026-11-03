@@ -668,6 +668,26 @@ async def test_get_latest_history_map_downloads_newest_file():
 
 
 @pytest.mark.asyncio
+async def test_get_latest_history_map_error_keeps_storage_credentials_out():
+    download = MagicMock(ok=False, status=403)
+    download.__aenter__ = AsyncMock(return_value=download)
+    download.__aexit__ = AsyncMock(return_value=False)
+    client = TuyaCloudClient("EU", websession=MagicMock(get=MagicMock(return_value=download)))
+    responses = {
+        "tuya.m.location.list": [{"groupId": 7}],
+        "tuya.m.dev.common.file.list": {"datas": [{"time": 1, "file": "/c1/new.bin"}]},
+        "tuya.m.dev.storage.config.get": STORAGE,
+    }
+
+    with patch.object(client, "request", side_effect=lambda action, *a, **kw: responses[action]):
+        with pytest.raises(TuyaCloudError) as err:
+            await client.get_latest_history_map("dev")
+
+    assert err.value.code == "403"
+    assert "TOK" not in str(err.value) and "X-Amz" not in str(err.value)
+
+
+@pytest.mark.asyncio
 async def test_get_latest_history_map_none_without_files():
     client = TuyaCloudClient("EU", websession=MagicMock())
     responses = {"tuya.m.location.list": [{"groupId": 7}], "tuya.m.dev.common.file.list": {"datas": []}}
