@@ -772,15 +772,19 @@ def is_s1_pro(model: str | None) -> bool:
 
 # Per-model overrides of ACCESSORY_MAX_LIFE for novel devices whose app lists
 # different accessories/intervals. Only the accessories listed get a sensor.
+_L60_SES_MAX_LIFE = {
+    "filter_usage": 200,
+    "main_brush_usage": 360,
+    "side_brush_usage": 250,
+    "dustbag_usage": 1440,
+}
+
 MODEL_ACCESSORY_MAX_LIFE = {
-    # L60 SES: values from the app's Accessories screen. No mop, tray or
-    # sensor-cleaning interval; the station's dust bag is tracked instead.
-    "T2277": {
-        "filter_usage": 200,
-        "main_brush_usage": 360,
-        "side_brush_usage": 250,
-        "dustbag_usage": 1440,
-    },
+    # L60 SES and L60 Hybrid SES: values from the app's Accessories screen. No
+    # tray or sensor-cleaning interval, and the Hybrid's mopping cloth has no
+    # hour count; the station's dust bag is tracked instead.
+    "T2277": _L60_SES_MAX_LIFE,
+    "T2278": _L60_SES_MAX_LIFE,
     # Omni E35 (#186): values from the app's Replace tab; sensor-cleaning
     # interval from its Maintain tab. The Brush Guard (120 h) is left out until
     # it's known whether it follows the scrape or the dustbag counter.

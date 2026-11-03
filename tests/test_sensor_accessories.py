@@ -80,6 +80,23 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
                 "Dust Bag Remaining": (1269, 1440),
             },
         ),
+        # The L60 Hybrid SES shares the L60 SES table.
+        (
+            "T2278",
+            AccessoryState(
+                filter_usage=30,
+                main_brush_usage=31,
+                side_brush_usage=21,
+                sensor_usage=138,
+                dustbag_usage=171,
+            ),
+            {
+                "Filter Remaining": (170, 200),
+                "Rolling Brush Remaining": (329, 360),
+                "Side Brush Remaining": (229, 250),
+                "Dust Bag Remaining": (1269, 1440),
+            },
+        ),
         # Values reported by an Omni E35 (#186). Its table doesn't list the
         # scrape and dustbag counters, so they get no sensor.
         (
