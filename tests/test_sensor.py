@@ -323,3 +323,29 @@ def test_current_room_sensor_values_and_unknown(mock_coordinator):
     mock_coordinator.current_room.return_value = (None, None)
     assert sensor.native_value is None
     assert sensor.extra_state_attributes == {"room_id": None, "room_name": None}
+
+
+@pytest.mark.asyncio
+async def test_l60_hybrid_ses_skips_sensors_its_dust_only_station_never_reports():
+    """T2278's station has no water tanks or firmware block, so those sensors are not created."""
+    coordinator = MagicMock()
+    coordinator.device_id = "l60"
+    coordinator.device_name = "L60"
+    coordinator.device_model = "T2278"
+    coordinator.api_type = "novel"
+    coordinator.connection_type = "cloud"
+    coordinator.data = VacuumState()
+    coordinator.last_update_success = True
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "entry_l60"
+    hass.data = {"robovac_mqtt": {"entry_l60": {"coordinators": [coordinator]}}}
+
+    added_entities = []
+    await async_setup_entry(hass, config_entry, added_entities.extend)
+    entity_ids = {e.unique_id for e in added_entities}
+
+    for suffix in ("water_level", "dirty_water_level", "dock_firmware_version"):
+        assert f"l60_{suffix}" not in entity_ids
+    assert "l60_dock_status" in entity_ids

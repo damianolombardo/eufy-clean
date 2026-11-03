@@ -25,6 +25,7 @@ from ._orphan_cleanup import prune_orphan_entities
 from .const import (
     ACCESSORY_MAX_LIFE,
     DOMAIN,
+    MODEL_ABSENT_SENSORS,
     MODEL_ACCESSORY_MAX_LIFE,
     SCALAR_ACCESSORY_MAX_LIFE,
 )
@@ -499,6 +500,12 @@ async def async_setup_entry(
         # only merge them for non-legacy devices.
         if coordinator.api_type != "legacy":
             sensors += novel_sensors
+
+        absent = {
+            f"{coordinator.device_id}_{suffix}"
+            for suffix in MODEL_ABSENT_SENSORS.get(coordinator.device_model, ())
+        }
+        sensors = [sensor for sensor in sensors if sensor.unique_id not in absent]
 
         # Apply protocol gating (scalar vs novel) before adding entities.
         entities.extend(filter_supported_entities(coordinator, sensors))

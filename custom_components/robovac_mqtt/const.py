@@ -807,6 +807,14 @@ MODEL_ACCESSORY_MAX_LIFE = {
     },
 }
 
+# Per-model sensors (unique-id suffixes) the device never reports, so they
+# would sit permanently unavailable.
+MODEL_ABSENT_SENSORS = {
+    # L60 Hybrid SES: the self-empty station has no water tanks and DeviceInfo
+    # carries no station block, so no dock firmware either.
+    "T2278": ("water_level", "dirty_water_level", "dock_firmware_version"),
+}
+
 # Dock statuses that indicate active dock operations
 # Used to determine when to reset to Idle
 DOCK_ACTIVITY_STATES = (
