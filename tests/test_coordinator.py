@@ -983,6 +983,21 @@ def test_tuya_pose_moves_robot_marker(mock_hass, mock_login):
     assert coordinator._robot_pixel == (30, 40)
 
 
+def test_tuya_room_mask_resolves_current_room(mock_hass, mock_login):
+    """The rasterised m/m/i room outline and the robot pixel share a grid, so the pose names its room."""
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    frames = _tuya_frames()
+    with patch.object(coordinator, "_rerender_map"), patch(
+        "custom_components.robovac_mqtt.coordinator.async_dispatcher_send"
+    ):
+        for kind in ("map", "rooms", "names"):
+            coordinator.handle_tuya_map_frame(frames[kind])
+        coordinator._move_robot((2, 2))
+        assert coordinator.current_room() == (10, "Study")
+        coordinator._move_robot((50, 50))
+        assert coordinator.current_room() == (None, None)
+
+
 @pytest.mark.asyncio
 async def test_history_map_loads_rooms_and_names(mock_hass, mock_login):
     blob = (
